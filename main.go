@@ -9,7 +9,7 @@ import (
 
 func tryGetConnection(uri string) (conn *amqp.Connection, err error) {
 	for i := 0; i < 3; i++ {
-		log.Printf("Essai N° %d\n", i)
+		log.Printf("Essai N° %d\n", i+1)
 		if conn, err = amqp.Dial("amqp://guest:guest@localhost:5672/"); err == nil {
 			break
 		}
