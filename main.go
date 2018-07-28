@@ -10,30 +10,31 @@ import (
 	"github.com/streadway/amqp"
 )
 
-func tryGetConnection(uri string) (conn *amqp.Connection, err error) {
+type Connection struct {
+	conn *amqp.Connection
+	uri  string
+}
+
+func tryGetConnection(uri string) (*Connection, error) {
 	for i := 0; i < 3; i++ {
 		log.Printf("Essai N° %d\n", i+1)
-		if conn, err = amqp.Dial("amqp://guest:guest@localhost:5672/"); err == nil {
-			break
+		if c, err := amqp.Dial(uri); err == nil {
+			conn := Connection{c, uri}
+			return &conn, nil
+		} else {
+			log.Println(err.Error())
 		}
-		time.Sleep(1 * time.Second)
+		time.Sleep(3 * time.Second)
 	}
-	return
+	return nil, fmt.Errorf("No connection")
 }
-func main() {
 
-	// Si je gère les connexions  en dehors dans tryGetConnection ...
-	conn, err := tryGetConnection("amqp://guest:guest@localhost:5672/")
+func tryPublish(c *Connection, msg *amqp.Publishing) error {
+	ch, err := c.conn.Channel()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	log.Println("Connexion obtenue")
-	defer conn.Close()
-
-	ch, err := conn.Channel()
-	if err != nil {
-		log.Fatal(err)
-	}
+	// Temporisation pour arrêter le serveur entretemps.
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("Key ? ")
 	_, err = reader.ReadString('\n')
@@ -41,8 +42,29 @@ func main() {
 		log.Fatal(err)
 	}
 
+	err = ch.Publish("finance", "check", false, false, *msg)
+	if err != nil {
+		c, err = tryGetConnection(c.uri)
+		if err != nil {
+			return err
+		}
+		tryPublish(c, msg)
+	}
+	return err
+}
+
+func main() {
+
+	// Si je gère les connexions  en dehors dans tryGetConnection ...
+	c, err := tryGetConnection("amqp://guest:guest@localhost:5672/")
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Connexion obtenue")
+	defer c.conn.Close()
+
 	// ... comment je gère les erreurs ici ?
-	err = ch.Publish("finance", "check", false, false, amqp.Publishing{
+	err = tryPublish(c, &amqp.Publishing{
 		ContentType: "text/plain",
 		Body:        []byte("RI5TO9O"),
 	})
