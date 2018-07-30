@@ -1,6 +1,7 @@
 package messagemanager
 
 import (
+	"errors"
 	"time"
 
 	"github.com/streadway/amqp"
@@ -19,6 +20,35 @@ type Call struct {
 	CorrID   string
 	Retry    int
 	Timeout  time.Duration
+}
+
+var PubConn *amqp.Connection
+var ConsConn *amqp.Connection
+
+func init() {
+	getConnection(&PubConn)
+	getConnection(&ConsConn)
+}
+
+func getConnection(conn **amqp.Connection) {
+	var connected bool
+	for i := 0; i < 3; i++ {
+		if c, err := amqp.Dial("amqp://guest:guest@localhost:5672/"); err == nil {
+			*conn = c
+			connected = true
+			receiver := make(chan *amqp.Error)
+			c.NotifyClose(receiver)
+
+			go func() {
+				<-receiver
+				getConnection(conn)
+			}()
+			break
+		}
+	}
+	if !connected {
+		panic(errors.New("Connection failed"))
+	}
 }
 
 //Publish publishes message
