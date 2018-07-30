@@ -3,26 +3,34 @@ package main
 import (
 	"connectionmanager/messagemanager"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/streadway/amqp"
 )
 
 func main() {
+	errChan := make(chan error)
+	respChan := make(chan []byte)
+	doneChan := make(chan interface{})
 
-	done, err := messagemanager.Publish("finance", "check", &amqp.Publishing{
-		ContentType: "text/plain",
-		Body:        []byte("RT84309"),
-	})
-	defer close(done)
-	defer close(err)
-
-	select {
-	case m := <-done:
-		fmt.Println("message reçu", m)
-	case e := <-err:
-		if e != nil {
-			fmt.Printf("Error : %s\n", e.Error())
-		}
+	call := messagemanager.Call{
+		Exchange: "finance",
+		Key:      "check",
+		Msg:      &amqp.Publishing{Body: []byte("RT84309"), ContentType: "text/plain"},
+		Err:      errChan,
+		Resp:     respChan,
+		Done:     doneChan,
+		Retry:    3,
+		Timeout:  100 * time.Millisecond,
 	}
-
+	messagemanager.Publish(call)
+	select {
+	case <-doneChan:
+		fmt.Println("message envoyé")
+	case <-respChan:
+		fmt.Println("réponse reçue")
+	case err := <-errChan:
+		log.Fatal(err.Error())
+	}
 }
