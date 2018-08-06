@@ -22,7 +22,7 @@ func main() {
 		Resp:     respChan,
 		Done:     doneChan,
 		Retry:    3,
-		Timeout:  5000 * time.Millisecond,
+		Timeout:  50000 * time.Millisecond,
 	}
 	messagemanager.Publish(call)
 	select {
@@ -33,5 +33,5 @@ func main() {
 	case err := <-errChan:
 		log.Println(err.Error())
 	}
-	time.Sleep(5 * time.Second)
+
 }

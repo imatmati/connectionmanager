@@ -30,15 +30,13 @@ type Call struct {
 	executed chan interface{}
 }
 
-var PubConn *amqp.Connection
+var pubConn *amqp.Connection
 
-//var ConsConn *amqp.Connection
 var wg sync.WaitGroup
 
 func init() {
 	wg.Add(1)
-	setConnection(&PubConn, "'publish connection'")
-	//setConnection(&ConsConn, "'consume connection'")
+	setConnection(&pubConn, "'publish connection'")
 }
 
 func setConnection(conn **amqp.Connection, name string) {
@@ -75,38 +73,38 @@ func setConnection(conn **amqp.Connection, name string) {
 func Publish(call Call) {
 	fmt.Println("==== Publish ===")
 	call.executed = make(chan interface{})
-	var cancelFunc context.CancelFunc
-	call.ctx, cancelFunc = context.WithTimeout(context.Background(), call.Timeout)
 	go acquireConnectionAndProceed(call)
+
 	go func() {
+		var cancelFunc context.CancelFunc
+		call.ctx, cancelFunc = context.WithTimeout(context.Background(), call.Timeout)
 		select {
 		case <-call.ctx.Done():
 			fmt.Println("Timeout happened")
 			call.Err <- errors.New("Timeout happened")
-			cancelFunc()
 			fmt.Println("Timeout sent")
 		case <-call.executed:
 			fmt.Println("Execution done")
-			cancelFunc()
 		}
+		cancelFunc()
 	}()
 
 }
 
-// Acquérir les connexions depuis un pool pour producteur/consommateur
+// Acquire connections and then let the process proceeds.
 func acquireConnectionAndProceed(call Call) {
 	fmt.Println("==== acquireConnectionAndProceed ===")
-	call.Conn = &PubConn
+	call.Conn = &pubConn
 	acquireChannelAndProceed(call)
 }
 
+//Acquire channel and then let the process proceeds.
 func acquireChannelAndProceed(call Call) {
 	fmt.Println("==== acquireChannelAndProceed ===")
-	if call.Retry <= 0 {
-		fmt.Println("==== Error Max Retries ===")
-		call.Err <- fmt.Errorf("max retries exceeded after : %s", call.lastErr.Error())
+	if err := checkRetry(call); err != nil {
 		return
 	}
+
 	if ch, err := (*call.Conn).Channel(); err == nil {
 		call.Channel = ch
 		fmt.Println("Please stop the rabbitmq server and then restart it after reconnection process has begun.")
@@ -123,11 +121,21 @@ func acquireChannelAndProceed(call Call) {
 
 }
 
-func publishAndProceed(call Call) {
-	fmt.Println("==== publishAndProceed ===")
+func checkRetry(call Call) error {
+	var err error
 	if call.Retry <= 0 {
 		fmt.Println("==== Error Max Retries ===")
-		call.Err <- fmt.Errorf("max retries exceeded after : %s", call.lastErr.Error())
+		err = fmt.Errorf("max retries exceeded after : %s", call.lastErr.Error())
+		call.Err <- err
+
+	}
+	return err
+}
+
+//Publis and then let the process proceeds.
+func publishAndProceed(call Call) {
+	fmt.Println("==== publishAndProceed ===")
+	if err := checkRetry(call); err != nil {
 		return
 	}
 
