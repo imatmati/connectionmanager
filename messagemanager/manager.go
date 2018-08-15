@@ -1,28 +1,35 @@
 package messagemanager
 
 import (
+	"account/utils/random"
 	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/streadway/amqp"
 )
 
+//Receive specifies
+type Receive struct {
+	Resp          chan<- []byte
+	Queue         string
+	Consumer      string
+	CorrelationId string
+}
+
 //Call transports a call with its state through calling process
 type Call struct {
-	Conn     **amqp.Connection
-	Channel  *amqp.Channel
+	conn     **amqp.Connection
+	channel  *amqp.Channel
 	Exchange string
 	Key      string
 	Msg      *amqp.Publishing
-	Resp     chan<- []byte
+	Receiver Receive
 	Err      chan<- error
 	Done     chan<- interface{}
-	CorrID   string
 	Retry    int
 	Timeout  time.Duration
 	lastErr  error
@@ -32,10 +39,10 @@ type Call struct {
 
 var pubConn *amqp.Connection
 
-var wg sync.WaitGroup
+//var wg sync.WaitGroup
 
 func init() {
-	wg.Add(1)
+	//wg.Add(1)
 	setConnection(&pubConn, "'publish connection'")
 }
 
@@ -59,7 +66,7 @@ func setConnection(conn **amqp.Connection, name string) {
 				e := <-receiver
 				fmt.Printf("Lost connection for %s : reconnecting : reason %s\n", name, e.Error())
 				setConnection(conn, name)
-				wg.Done()
+				//wg.Done()
 			}()
 			break
 		}
@@ -72,6 +79,10 @@ func setConnection(conn **amqp.Connection, name string) {
 //Publish publishes message
 func Publish(call Call) {
 	fmt.Println("==== Publish ===")
+	if call.Receiver.Resp != nil {
+		call.Receiver.CorrelationId = random.RandomString(32)
+		fmt.Println("Correlation id", call.Receiver.CorrelationId)
+	}
 	call.executed = make(chan interface{})
 	go acquireConnectionAndProceed(call)
 
@@ -94,7 +105,7 @@ func Publish(call Call) {
 // Acquire connections and then let the process proceeds.
 func acquireConnectionAndProceed(call Call) {
 	fmt.Println("==== acquireConnectionAndProceed ===")
-	call.Conn = &pubConn
+	call.conn = &pubConn
 	acquireChannelAndProceed(call)
 }
 
@@ -105,13 +116,13 @@ func acquireChannelAndProceed(call Call) {
 		return
 	}
 
-	if ch, err := (*call.Conn).Channel(); err == nil {
-		call.Channel = ch
+	if ch, err := (*call.conn).Channel(); err == nil {
+		call.channel = ch
 		fmt.Println("Please stop the rabbitmq server and then restart it after reconnection process has begun.")
 		reader := bufio.NewReader(os.Stdin)
 		fmt.Println("Strike a key")
 		reader.ReadString('\n')
-		wg.Wait()
+		//wg.Wait()
 		publishAndProceed(call)
 	} else {
 		call.Retry--
@@ -139,9 +150,10 @@ func publishAndProceed(call Call) {
 		return
 	}
 
-	if err := call.Channel.Publish(call.Exchange, call.Key, false, false, *call.Msg); err == nil {
+	if err := call.channel.Publish(call.Exchange, call.Key, false, false, *call.Msg); err == nil {
 		consumeResponse(call)
 	} else {
+		call.lastErr = err
 		call.Retry--
 		acquireChannelAndProceed(call)
 	}
@@ -149,9 +161,31 @@ func publishAndProceed(call Call) {
 }
 
 func consumeResponse(call Call) {
+	if err := checkRetry(call); err != nil {
+		return
+	}
 	fmt.Println("==== consumeResponse ===")
-	close(call.Done)
-	fmt.Println("closed call.Done")
-	close(call.executed)
-	fmt.Println("closed call.executed")
+	if delivery, err := call.channel.Consume(call.Receiver.Queue, call.Receiver.Consumer, false, false, false, false, nil); err == nil {
+		//for {
+		// Que se passe-t-il en cas de perte de connexion à ce stade ?
+		msg := <-delivery
+		fmt.Printf("msg %s : %v\n", call.Receiver.CorrelationId, msg.CorrelationId)
+		if msg.CorrelationId == call.Receiver.CorrelationId {
+			msg.Ack(false)
+			call.Receiver.Resp <- msg.Body
+			//break
+		}
+		msg.Nack(false, true)
+		//}
+		call.Done <- nil
+		fmt.Println("closed call.Done")
+		close(call.executed)
+		fmt.Println("closed call.executed")
+	} else {
+		call.lastErr = err
+		call.Retry--
+		consumeResponse(call)
+		return
+	}
+
 }
