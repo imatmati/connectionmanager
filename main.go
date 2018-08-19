@@ -1,8 +1,7 @@
 package main
 
 import (
-	m "connectionmanager/messagemanager"
-	"fmt"
+	"connectionmanager/clients"
 	"log"
 	"time"
 
@@ -10,31 +9,26 @@ import (
 )
 
 func main() {
-	errChan := make(chan error)
-	respChan := make(chan []byte)
-	doneChan := make(chan interface{})
+	const (
+		PUBLISH = "publish"
+		URL     = "amqp://guest:guest@localhost:5672"
+	)
 
-	call := m.Call{
+	// Le client est relié à une instance RabbitMQ.
+	// Deux connections sont implicitement créées
+	client := clients.New(URL)
+	err, done := client.Publish(clients.Call{
 		Exchange: "finance",
 		Key:      "check",
 		Msg:      &amqp.Publishing{Body: []byte("RT84309"), ContentType: "text/plain"},
-		Err:      errChan,
-		Receiver: m.Receive{
-			Queue: "resp_check",
-			Resp:  respChan,
-		},
-		Done:    doneChan,
-		Retry:   3,
-		Timeout: 50000 * time.Millisecond,
-	}
-	m.Publish(call)
-	select {
-	case <-doneChan:
-		fmt.Println("message envoyé")
-		resp := <-respChan
-		fmt.Printf("réponse reçue : %v\n", resp)
-	case err := <-errChan:
-		log.Println(err.Error())
-	}
+		Retry:    3,
+		Timeout:  50000 * time.Millisecond,
+	})
 
+	select {
+	case e := <-err:
+		log.Fatal(e.Error())
+	case <-done:
+		log.Println("Message sent")
+	}
 }
