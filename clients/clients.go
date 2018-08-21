@@ -77,10 +77,13 @@ func publishAndProceed(call Call) {
 	if err := checkRetry(call); err != nil {
 		return
 	}
-
+	fmt.Println("Restart the server then hit a key")
+	fmt.Scanln()
+	connectors.Synchro.Wait()
 	if err := call.channel.Publish(call.Exchange, call.Key, false, false, *call.Msg); err != nil {
 		traceError(call, err)
 		acquireChannelAndProceed(call)
+		return
 	}
 	close(call.done)
 }
@@ -91,6 +94,7 @@ func acquireChannelAndProceed(call Call) {
 	if err := checkRetry(call); err != nil {
 		return
 	}
+
 	if ch, err := (*call.conn).Channel(); err == nil {
 		call.channel = ch
 		publishAndProceed(call)

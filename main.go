@@ -15,7 +15,7 @@ func main() {
 	)
 
 	// Le client est relié à une instance RabbitMQ.
-	// Deux connections sont implicitement créées
+	// Deux connexions sont implicitement créées
 	client := clients.New(URL)
 	err, done := client.Publish(clients.Call{
 		Exchange: "finance",

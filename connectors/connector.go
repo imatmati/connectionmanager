@@ -18,6 +18,7 @@ type Connector struct {
 }
 
 func (cm Connector) GetPublishConnection() **amqp.Connection {
+	Synchro.Add(1)
 	// Mutex ?
 	if cm.pubConn == nil {
 		cm.setConnection(&cm.pubConn, "publish")
@@ -35,10 +36,13 @@ func (cm Connector) GetConsumeConnection() **amqp.Connection {
 }
 
 func (cm Connector) setConnection(conn **amqp.Connection, name string) {
+
 	log.Printf("Trying to connect '%s' to URL %s\n", name, cm.url)
 	log.Printf("Current connexion pointer %p\n", *conn)
 	var connected bool
 	for i := 0; i < 3; i++ {
+		fmt.Println("Hit a key to connect to RabbitMQ")
+		fmt.Scanln()
 		if c, err := amqp.Dial(cm.url); err == nil {
 			log.Println("Connection acquired")
 			*conn = c
@@ -51,7 +55,7 @@ func (cm Connector) setConnection(conn **amqp.Connection, name string) {
 				e := <-receiver
 				log.Printf("Lost connection for %s : reconnecting : reason %s\n", name, e.Error())
 				cm.setConnection(conn, name)
-
+				Synchro.Done()
 			}()
 			break
 		}
