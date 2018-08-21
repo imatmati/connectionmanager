@@ -14,29 +14,34 @@ func New(url string) Client {
 	return Client{connector: connectors.New(url)}
 }
 
-//Receive specifies
-type Receive struct {
-	resp          chan<- []byte
-	Queue         string
-	Consumer      string
-	CorrelationID string
+//Reply manages a reply from RabbitMQ (RPC)
+type Reply struct {
+	resp     chan<- []byte
+	Queue    string
+	Consumer string
+	consconn **amqp.Connection
 }
 
 //Call transports a call with its state through calling process
 type Call struct {
-	conn     **amqp.Connection
-	channel  *amqp.Channel
-	Exchange string
-	Key      string
-	Msg      *amqp.Publishing
-	err      chan<- error
-	receiver Receive
-	done     chan<- interface{}
-	Retry    int
-	Timeout  time.Duration
-	lastErr  error
-	ctx      context.Context
-	executed chan interface{}
+	CorrelationID string
+	Exchange      string
+	Key           string
+	Msg           *amqp.Publishing
+	Retry         int
+	Timeout       time.Duration
+	pubconn       **amqp.Connection
+}
+
+//CallReply is a generic structure for calls to RabbitMQ with optional reply
+type CallReply struct {
+	call    Call
+	reply   Reply
+	err     chan<- error
+	done    chan<- interface{}
+	ctx     context.Context
+	channel *amqp.Channel
+	lastErr error
 }
 
 type Client struct {
@@ -45,77 +50,89 @@ type Client struct {
 
 func (c Client) Publish(call Call) (<-chan error, <-chan interface{}) {
 
-	// Mutex ?
-	call.conn = c.connector.GetPublishConnection()
-
-	errChan := make(chan error)
-	doneChan := make(chan interface{})
-
-	call.err = errChan
-	call.done = doneChan
-	call.executed = make(chan interface{})
-	go acquireChannelAndProceed(call)
-	go func() {
-		var cancelFunc context.CancelFunc
-		call.ctx, cancelFunc = context.WithTimeout(context.Background(), call.Timeout)
-		select {
-		case <-call.ctx.Done():
-			fmt.Println("Timeout happened")
-			call.err <- errors.New("Timeout happened")
-			fmt.Println("Timeout sent")
-		case <-call.executed:
-			fmt.Println("Execution done")
-		}
-		cancelFunc()
-	}()
+	errChan, doneChan, _ := c.publishConsume(&CallReply{
+		call: call, reply: Reply{},
+	})
 	return errChan, doneChan
 }
 
-//Publis and then let the process proceeds.
-func publishAndProceed(call Call) {
+//PublishConsume publishes a message and consumes a reply from RabbitMQ
+func (c Client) PublishConsume(callReply CallReply) (<-chan error, <-chan interface{}, <-chan []byte) {
+	return c.publishConsume(&callReply)
+}
+
+//PublishConsume publishes a message and consumes a reply from RabbitMQ
+func (c Client) publishConsume(callReply *CallReply) (<-chan error, <-chan interface{}, <-chan []byte) {
+
+	// Mutex ?
+	callReply.call.pubconn = c.connector.GetPublishConnection()
+	callReply.reply.consconn = c.connector.GetConsumeConnection()
+
+	errChan := make(chan error)
+	doneChan := make(chan interface{})
+	replyChan := make(chan []byte)
+
+	callReply.err = errChan
+	callReply.done = doneChan
+	callReply.reply.resp = replyChan
+
+	go acquireChannelAndProceed(callReply)
+	go func() {
+		var cancelFunc context.CancelFunc
+		callReply.ctx, cancelFunc = context.WithTimeout(context.Background(), callReply.call.Timeout)
+		<-callReply.ctx.Done()
+		cancelFunc()
+		callReply.err <- errors.New("Timeout happened")
+
+	}()
+	return errChan, doneChan, replyChan
+}
+
+//Publish and then let the process proceeds.
+func publishAndProceed(callReply *CallReply) {
 	fmt.Println("==== publishAndProceed ===")
-	if err := checkRetry(call); err != nil {
+	if err := checkRetry(callReply); err != nil {
 		return
 	}
 	fmt.Println("Restart the server then hit a key")
 	fmt.Scanln()
 	connectors.Synchro.Wait()
-	if err := call.channel.Publish(call.Exchange, call.Key, false, false, *call.Msg); err != nil {
-		traceError(call, err)
-		acquireChannelAndProceed(call)
+	if err := callReply.channel.Publish(callReply.call.Exchange, callReply.call.Key, false, false, *callReply.call.Msg); err != nil {
+		traceError(callReply, err)
+		acquireChannelAndProceed(callReply)
 		return
 	}
-	close(call.done)
+	close(callReply.done)
 }
 
 //Acquire channel and then let the process proceeds.
-func acquireChannelAndProceed(call Call) {
+func acquireChannelAndProceed(callReply *CallReply) {
 	fmt.Println("==== acquireChannelAndProceed ===")
-	if err := checkRetry(call); err != nil {
+	if err := checkRetry(callReply); err != nil {
 		return
 	}
 
-	if ch, err := (*call.conn).Channel(); err == nil {
-		call.channel = ch
-		publishAndProceed(call)
+	if ch, err := (*callReply.call.pubconn).Channel(); err == nil {
+		callReply.channel = ch
+		publishAndProceed(callReply)
 	} else {
-		traceError(call, err)
-		acquireChannelAndProceed(call)
+		traceError(callReply, err)
+		acquireChannelAndProceed(callReply)
 	}
 
 }
 
-func traceError(call Call, err error) {
-	call.lastErr = err
-	call.Retry--
+func traceError(callReply *CallReply, err error) {
+	callReply.lastErr = err
+	callReply.call.Retry = callReply.call.Retry - 1
 }
 
-func checkRetry(call Call) error {
+func checkRetry(callReply *CallReply) error {
 	var err error
-	if call.Retry <= 0 {
+	if callReply.call.Retry <= 0 {
 		fmt.Println("==== Error Max Retries ===")
-		err = fmt.Errorf("max retries exceeded after : %s", call.lastErr.Error())
-		call.err <- err
+		err = fmt.Errorf("max retries exceeded after : %s", callReply.lastErr.Error())
+		callReply.err <- err
 
 	}
 	return err

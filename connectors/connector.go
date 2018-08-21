@@ -17,33 +17,15 @@ type Connector struct {
 	consConn *amqp.Connection
 }
 
-func (cm Connector) GetPublishConnection() **amqp.Connection {
-	Synchro.Add(1)
-	// Mutex ?
-	if cm.pubConn == nil {
-		cm.setConnection(&cm.pubConn, "publish")
-	}
-	fmt.Printf("pub conn %p\n", cm.pubConn)
-	return &cm.pubConn
-}
+func setConnection(conn **amqp.Connection, url, name string) {
 
-func (cm Connector) GetConsumeConnection() **amqp.Connection {
-	// Mutex ?
-	if cm.consConn == nil {
-		cm.setConnection(&cm.consConn, "publish")
-	}
-	return &cm.consConn
-}
-
-func (cm Connector) setConnection(conn **amqp.Connection, name string) {
-
-	log.Printf("Trying to connect '%s' to URL %s\n", name, cm.url)
+	log.Printf("Trying to connect '%s' to URL %s\n", name, url)
 	log.Printf("Current connexion pointer %p\n", *conn)
 	var connected bool
 	for i := 0; i < 3; i++ {
 		fmt.Println("Hit a key to connect to RabbitMQ")
 		fmt.Scanln()
-		if c, err := amqp.Dial(cm.url); err == nil {
+		if c, err := amqp.Dial(url); err == nil {
 			log.Println("Connection acquired")
 			*conn = c
 			log.Printf("New connection pointer %p\n", *conn)
@@ -54,7 +36,7 @@ func (cm Connector) setConnection(conn **amqp.Connection, name string) {
 			go func() {
 				e := <-receiver
 				log.Printf("Lost connection for %s : reconnecting : reason %s\n", name, e.Error())
-				cm.setConnection(conn, name)
+				setConnection(conn, url, name)
 				Synchro.Done()
 			}()
 			break
@@ -63,6 +45,24 @@ func (cm Connector) setConnection(conn **amqp.Connection, name string) {
 	if !connected {
 		panic(errors.New("Connection failed"))
 	}
+}
+
+func (cm Connector) GetPublishConnection() **amqp.Connection {
+	Synchro.Add(2)
+	// Mutex ?
+	if cm.pubConn == nil {
+		setConnection(&cm.pubConn, cm.url, "publish")
+	}
+	fmt.Printf("pub conn %p\n", cm.pubConn)
+	return &cm.pubConn
+}
+
+func (cm Connector) GetConsumeConnection() **amqp.Connection {
+	// Mutex ?
+	if cm.consConn == nil {
+		setConnection(&cm.consConn, cm.url, "consume")
+	}
+	return &cm.consConn
 }
 
 func New(url string) Connector {
