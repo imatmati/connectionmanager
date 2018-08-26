@@ -10,7 +10,6 @@ import (
 )
 
 var Synchro sync.WaitGroup
-var conSynchro sync.RWMutex
 
 type Connector struct {
 	url             string
@@ -18,6 +17,8 @@ type Connector struct {
 	consConn        *amqp.Connection
 	pubConnVersion  int
 	consConnVersion int
+	conPubSynchro   sync.RWMutex
+	conConsSynchro  sync.RWMutex
 }
 
 func setConnection(conn **amqp.Connection, url, name string) {
@@ -50,29 +51,28 @@ func setConnection(conn **amqp.Connection, url, name string) {
 	}
 }
 
-func (cm Connector) GetConsumeConnection() **amqp.Connection {
-	return getConnection(cm.consConn, "consume", cm.url, &cm.consConnVersion)
+func (cm *Connector) GetConsumeConnection() **amqp.Connection {
+	return getConnection(cm.consConn, "consume", cm.url, &cm.consConnVersion, &cm.conConsSynchro)
 }
 
-func (cm Connector) GetPublishConnection() **amqp.Connection {
-	return getConnection(cm.pubConn, "publish", cm.url, &cm.pubConnVersion)
+func (cm *Connector) GetPublishConnection() **amqp.Connection {
+	return getConnection(cm.pubConn, "publish", cm.url, &cm.pubConnVersion, &cm.conPubSynchro)
 }
 
-func getConnection(con *amqp.Connection, conName, url string, currentVersion *int) **amqp.Connection {
+func getConnection(con *amqp.Connection, conName, url string, currentVersion *int, rwMutex *sync.RWMutex) **amqp.Connection {
 	fmt.Printf("getConnection for %s\n", conName)
-	conSynchro.RLock()
-	fmt.Println("RLock acquired")
+	rwMutex.RLock()
 	version := *currentVersion
 	if con == nil {
-		conSynchro.RUnlock()
-		conSynchro.Lock()
+		rwMutex.RUnlock()
+		rwMutex.Lock()
 		if version == *currentVersion {
 			setConnection(&con, url, conName)
 			// If here connection has been established otherwise would have panicked.
 			*currentVersion++
 
 		}
-		conSynchro.Unlock()
+		rwMutex.Unlock()
 	}
 
 	fmt.Printf("pub conn %p\n", con)
@@ -80,5 +80,5 @@ func getConnection(con *amqp.Connection, conName, url string, currentVersion *in
 }
 
 func New(url string) Connector {
-	return Connector{url, nil, nil, 0, 0}
+	return Connector{url, nil, nil, 0, 0, sync.RWMutex{}, sync.RWMutex{}}
 }
