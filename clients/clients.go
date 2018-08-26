@@ -50,7 +50,7 @@ type Client struct {
 
 func (c Client) Publish(call Call) (<-chan error, <-chan interface{}) {
 
-	errChan, doneChan, _ := c.publishConsume(&CallReply{
+	errChan, doneChan, _ := c.PublishConsume(CallReply{
 		call: call, reply: Reply{},
 	})
 	return errChan, doneChan
@@ -58,15 +58,6 @@ func (c Client) Publish(call Call) (<-chan error, <-chan interface{}) {
 
 //PublishConsume publishes a message and consumes a reply from RabbitMQ
 func (c Client) PublishConsume(callReply CallReply) (<-chan error, <-chan interface{}, <-chan []byte) {
-	return c.publishConsume(&callReply)
-}
-
-//PublishConsume publishes a message and consumes a reply from RabbitMQ
-func (c Client) publishConsume(callReply *CallReply) (<-chan error, <-chan interface{}, <-chan []byte) {
-
-	// Mutex ?
-	callReply.call.pubconn = c.connector.GetPublishConnection()
-	callReply.reply.consconn = c.connector.GetConsumeConnection()
 
 	errChan := make(chan error)
 	doneChan := make(chan interface{})
@@ -76,20 +67,23 @@ func (c Client) publishConsume(callReply *CallReply) (<-chan error, <-chan inter
 	callReply.done = doneChan
 	callReply.reply.resp = replyChan
 
-	go acquireChannelAndProceed(callReply)
 	go func() {
-		var cancelFunc context.CancelFunc
-		callReply.ctx, cancelFunc = context.WithTimeout(context.Background(), callReply.call.Timeout)
-		<-callReply.ctx.Done()
-		cancelFunc()
+		<-time.After(callReply.call.Timeout)
 		callReply.err <- errors.New("Timeout happened")
+	}()
 
+	go func() {
+		callReply.call.pubconn = c.connector.GetPublishConnection()
+		if callReply.reply.Queue != "" {
+			callReply.reply.consconn = c.connector.GetConsumeConnection()
+		}
+		acquireChannelAndProceed(callReply)
 	}()
 	return errChan, doneChan, replyChan
 }
 
 //Publish and then let the process proceeds.
-func publishAndProceed(callReply *CallReply) {
+func publishAndProceed(callReply CallReply) {
 	fmt.Println("==== publishAndProceed ===")
 	if err := checkRetry(callReply); err != nil {
 		return
@@ -106,7 +100,7 @@ func publishAndProceed(callReply *CallReply) {
 }
 
 //Acquire channel and then let the process proceeds.
-func acquireChannelAndProceed(callReply *CallReply) {
+func acquireChannelAndProceed(callReply CallReply) {
 	fmt.Println("==== acquireChannelAndProceed ===")
 	if err := checkRetry(callReply); err != nil {
 		return
@@ -122,12 +116,12 @@ func acquireChannelAndProceed(callReply *CallReply) {
 
 }
 
-func traceError(callReply *CallReply, err error) {
+func traceError(callReply CallReply, err error) {
 	callReply.lastErr = err
 	callReply.call.Retry = callReply.call.Retry - 1
 }
 
-func checkRetry(callReply *CallReply) error {
+func checkRetry(callReply CallReply) error {
 	var err error
 	if callReply.call.Retry <= 0 {
 		fmt.Println("==== Error Max Retries ===")

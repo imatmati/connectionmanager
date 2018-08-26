@@ -22,7 +22,7 @@ func main() {
 		Key:      "check",
 		Msg:      &amqp.Publishing{Body: []byte("RT84309"), ContentType: "text/plain"},
 		Retry:    3,
-		Timeout:  100 * time.Second,
+		Timeout:  10 * time.Second,
 	})
 
 	select {

@@ -10,11 +10,14 @@ import (
 )
 
 var Synchro sync.WaitGroup
+var conSynchro sync.RWMutex
 
 type Connector struct {
-	url      string
-	pubConn  *amqp.Connection
-	consConn *amqp.Connection
+	url             string
+	pubConn         *amqp.Connection
+	consConn        *amqp.Connection
+	pubConnVersion  int
+	consConnVersion int
 }
 
 func setConnection(conn **amqp.Connection, url, name string) {
@@ -37,7 +40,7 @@ func setConnection(conn **amqp.Connection, url, name string) {
 				e := <-receiver
 				log.Printf("Lost connection for %s : reconnecting : reason %s\n", name, e.Error())
 				setConnection(conn, url, name)
-				Synchro.Done()
+				//Synchro.Done()
 			}()
 			break
 		}
@@ -47,24 +50,35 @@ func setConnection(conn **amqp.Connection, url, name string) {
 	}
 }
 
-func (cm Connector) GetPublishConnection() **amqp.Connection {
-	Synchro.Add(2)
-	// Mutex ?
-	if cm.pubConn == nil {
-		setConnection(&cm.pubConn, cm.url, "publish")
-	}
-	fmt.Printf("pub conn %p\n", cm.pubConn)
-	return &cm.pubConn
+func (cm Connector) GetConsumeConnection() **amqp.Connection {
+	return getConnection(cm.consConn, "consume", cm.url, &cm.consConnVersion)
 }
 
-func (cm Connector) GetConsumeConnection() **amqp.Connection {
-	// Mutex ?
-	if cm.consConn == nil {
-		setConnection(&cm.consConn, cm.url, "consume")
+func (cm Connector) GetPublishConnection() **amqp.Connection {
+	return getConnection(cm.pubConn, "publish", cm.url, &cm.pubConnVersion)
+}
+
+func getConnection(con *amqp.Connection, conName, url string, currentVersion *int) **amqp.Connection {
+	fmt.Printf("getConnection for %s\n", conName)
+	conSynchro.RLock()
+	fmt.Println("RLock acquired")
+	version := *currentVersion
+	if con == nil {
+		conSynchro.RUnlock()
+		conSynchro.Lock()
+		if version == *currentVersion {
+			setConnection(&con, url, conName)
+			// If here connection has been established otherwise would have panicked.
+			*currentVersion++
+
+		}
+		conSynchro.Unlock()
 	}
-	return &cm.consConn
+
+	fmt.Printf("pub conn %p\n", con)
+	return &con
 }
 
 func New(url string) Connector {
-	return Connector{url, nil, nil}
+	return Connector{url, nil, nil, 0, 0}
 }
