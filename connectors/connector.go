@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/streadway/amqp"
 )
@@ -17,8 +18,8 @@ type Connector struct {
 	consConn        *amqp.Connection
 	pubConnVersion  int
 	consConnVersion int
-	conPubSynchro   sync.RWMutex
-	conConsSynchro  sync.RWMutex
+	ConPubSynchro   sync.RWMutex
+	ConConsSynchro  sync.RWMutex
 }
 
 func setConnection(conn **amqp.Connection, url, name string) {
@@ -45,6 +46,8 @@ func setConnection(conn **amqp.Connection, url, name string) {
 			}()
 			break
 		}
+		// Time given to wait for RabbitMQ to stand up before an other attempt.
+		time.Sleep(10 * time.Millisecond)
 	}
 	if !connected {
 		panic(errors.New("Connection failed"))
@@ -52,11 +55,11 @@ func setConnection(conn **amqp.Connection, url, name string) {
 }
 
 func (cm *Connector) GetConsumeConnection() **amqp.Connection {
-	return getConnection(cm.consConn, "consume", cm.url, &cm.consConnVersion, &cm.conConsSynchro)
+	return getConnection(cm.consConn, "consume", cm.url, &cm.consConnVersion, &cm.ConConsSynchro)
 }
 
 func (cm *Connector) GetPublishConnection() **amqp.Connection {
-	return getConnection(cm.pubConn, "publish", cm.url, &cm.pubConnVersion, &cm.conPubSynchro)
+	return getConnection(cm.pubConn, "publish", cm.url, &cm.pubConnVersion, &cm.ConPubSynchro)
 }
 
 func getConnection(con *amqp.Connection, conName, url string, currentVersion *int, rwMutex *sync.RWMutex) **amqp.Connection {

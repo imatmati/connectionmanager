@@ -2,7 +2,6 @@ package clients
 
 import (
 	"connectionmanager/connectors"
-	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -39,7 +38,6 @@ type CallReply struct {
 	Reply   Reply
 	err     chan<- error
 	done    chan<- interface{}
-	ctx     context.Context
 	channel *amqp.Channel
 	lastErr error
 }
@@ -51,7 +49,7 @@ type Client struct {
 func (c *Client) Publish(call Call) (<-chan error, <-chan interface{}) {
 
 	errChan, doneChan, _ := c.PublishConsume(CallReply{
-		Call: call, Reply: Reply{},
+		Call: call,
 	})
 	return errChan, doneChan
 }
@@ -77,13 +75,13 @@ func (c *Client) PublishConsume(callReply CallReply) (<-chan error, <-chan inter
 		if callReply.Reply.Queue != "" {
 			callReply.Reply.consconn = c.connector.GetConsumeConnection()
 		}
-		acquireChannelAndProceed(callReply)
+		c.acquireChannelAndProceed(callReply)
 	}()
 	return errChan, doneChan, replyChan
 }
 
 //Publish and then let the process proceeds.
-func publishAndProceed(callReply CallReply) {
+func (c *Client) publishAndProceed(callReply CallReply) {
 	fmt.Println("==== publishAndProceed ===")
 	if err := checkRetry(callReply); err != nil {
 		return
@@ -93,24 +91,28 @@ func publishAndProceed(callReply CallReply) {
 	connectors.Synchro.Wait()
 	if err := callReply.channel.Publish(callReply.Call.Exchange, callReply.Call.Key, false, false, *callReply.Call.Msg); err != nil {
 		traceError(callReply, err)
-		acquireChannelAndProceed(callReply)
+		c.connector.ConPubSynchro.RLock()
+		c.acquireChannelAndProceed(callReply)
+		c.connector.ConPubSynchro.RUnlock()
 		return
 	}
 	if callReply.Reply.Queue != "" {
-		consume(callReply)
+		c.consume(callReply)
 	}
 
 	close(callReply.done)
 }
 
-func consume(callReply CallReply) {
+func (c *Client) consume(callReply CallReply) {
 	fmt.Println("==== consume ===")
 	if callReply.Call.Msg.CorrelationId == "" {
 		panic(errors.New("Correlation id missing for consuming response"))
 	}
 	if delivery, err := callReply.channel.Consume(callReply.Reply.Queue, callReply.Reply.Consumer, false, true, true, true, nil); err != nil {
 		traceError(callReply, err)
-		acquireChannelAndProceed(callReply, consume)
+		c.connector.ConConsSynchro.RLock()
+		c.acquireChannelAndProceed(callReply, c.consume)
+		c.connector.ConConsSynchro.RUnlock()
 		return
 
 	} else {
@@ -133,16 +135,15 @@ func consume(callReply CallReply) {
 
 			}
 		}
-		fmt.Println("sortie de for")
 	}
 }
 
 //Acquire channel and then let the process proceeds.
-func acquireChannelAndProceed(callReply CallReply, fun ...func(CallReply)) {
+func (c *Client) acquireChannelAndProceed(callReply CallReply, fun ...func(CallReply)) {
 	if len(fun) > 1 {
 		panic(errors.New("One function allowed in acquireChannelAndProceed"))
 	}
-	f := publishAndProceed
+	f := c.publishAndProceed
 	if len(fun) == 1 {
 		f = fun[0]
 	}
@@ -156,7 +157,13 @@ func acquireChannelAndProceed(callReply CallReply, fun ...func(CallReply)) {
 		f(callReply)
 	} else {
 		traceError(callReply, err)
-		acquireChannelAndProceed(callReply, f)
+		// Way to improve by setting clearly what we're doing : publishing or consuming.
+		c.connector.ConPubSynchro.RLock()
+		c.connector.ConConsSynchro.RLock()
+		c.acquireChannelAndProceed(callReply, f)
+		c.connector.ConConsSynchro.RUnlock()
+		c.connector.ConPubSynchro.RUnlock()
+
 	}
 
 }
