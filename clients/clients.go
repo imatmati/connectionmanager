@@ -80,6 +80,18 @@ func (c *Client) PublishConsume(callReply CallReply) (<-chan error, <-chan inter
 	return errChan, doneChan, replyChan
 }
 
+func (c *Client) waitForPubConAnd(f func()) {
+	c.connector.ConPubSynchro.RLock()
+	f()
+	c.connector.ConPubSynchro.RUnlock()
+}
+
+func (c *Client) waitForConsConAnd(f func()) {
+	c.connector.ConConsSynchro.RLock()
+	f()
+	c.connector.ConConsSynchro.RUnlock()
+}
+
 //Publish and then let the process proceeds.
 func (c *Client) publishAndProceed(callReply CallReply) {
 	fmt.Println("==== publishAndProceed ===")
@@ -91,9 +103,9 @@ func (c *Client) publishAndProceed(callReply CallReply) {
 	connectors.Synchro.Wait()
 	if err := callReply.channel.Publish(callReply.Call.Exchange, callReply.Call.Key, false, false, *callReply.Call.Msg); err != nil {
 		traceError(callReply, err)
-		c.connector.ConPubSynchro.RLock()
-		c.acquireChannelAndProceed(callReply)
-		c.connector.ConPubSynchro.RUnlock()
+		c.waitForPubConAnd(func() {
+			c.acquireChannelAndProceed(callReply)
+		})
 		return
 	}
 	if callReply.Reply.Queue != "" {
@@ -110,9 +122,10 @@ func (c *Client) consume(callReply CallReply) {
 	}
 	if delivery, err := callReply.channel.Consume(callReply.Reply.Queue, callReply.Reply.Consumer, false, true, true, true, nil); err != nil {
 		traceError(callReply, err)
-		c.connector.ConConsSynchro.RLock()
-		c.acquireChannelAndProceed(callReply, c.consume)
-		c.connector.ConConsSynchro.RUnlock()
+
+		c.waitForConsConAnd(func() {
+			c.acquireChannelAndProceed(callReply, c.consume)
+		})
 		return
 
 	} else {
@@ -124,9 +137,7 @@ func (c *Client) consume(callReply CallReply) {
 				if msg.CorrelationId == callReply.Call.Msg.CorrelationId {
 					log.Println("Correlation id matching")
 					msg.Ack(false)
-					log.Println("berfore sending")
 					callReply.Reply.resp <- msg.Body
-					log.Println("after sending")
 					break MsgLoop
 				} else {
 					log.Println("Correlation id mismatching")
